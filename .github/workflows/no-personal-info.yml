@@ -1,0 +1,53 @@
+name: No personal info
+
+# Defence-in-depth: even if the local pre-commit hook is bypassed
+# (`git commit --no-verify`), this CI job catches generic PII leaks.
+# The repo-side deny list intentionally targets *patterns of personal
+# data anyone might accidentally leak* — not the specific values from
+# any one developer's local `.pii-deny.txt` (which is gitignored).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Block obvious PII / AI attribution / secret-shaped strings
+        run: |
+          set -e
+          patterns=(
+            # AI attribution (project policy)
+            '[Cc]o-[Aa]uthored-[Bb]y:.*[Cc]laude'
+            '[Cc]o-[Aa]uthored-[Bb]y:.*[Aa]nthropic'
+            '[Gg]enerated.with.*[Aa]nthropic'
+            '[Gg]enerated.with.*[Cc]laude'
+            # Email-shaped (excluding the project bot email)
+            '[a-z0-9._%+-]+@(gmail|live|hotmail|outlook|icloud|yahoo)\.[a-z]{2,}'
+            # Common host-path leaks
+            '/Users/[a-z][a-z0-9_-]*/'
+            '/home/[a-z][a-z0-9_-]*/'
+            # Tailscale magic-DNS hosts
+            '\.tail[a-z0-9]+\.ts\.net'
+            # Tuya device_id shape (22-char starting bf followed by hex+letters)
+            # specifically excluding the documented placeholder
+            'bf[0-9a-f]{8,}[a-z0-9]{8,}'
+          )
+          violations=0
+          for p in "${patterns[@]}"; do
+            if grep -rE --include='*' --exclude-dir='.git' --exclude-dir='.github' "$p" . 2>/dev/null | grep -v 'bfxxxxxxxxxxxxxxxxxxxx' | head -3; then
+              echo "::error::PII pattern matched: $p"
+              violations=$((violations + 1))
+            fi
+          done
+          if [ "$violations" -gt 0 ]; then
+            echo "$violations PII pattern(s) leaked. Edit the offending file(s) before merging."
+            exit 1
+          fi
+          echo "PII scan clean."

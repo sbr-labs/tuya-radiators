@@ -1,3 +1,6 @@
+# PII deny list — local-only, never committed (used by pre-commit hook).
+.pii-deny.txt
+
 __pycache__/
 *.py[cod]
 *$py.class
