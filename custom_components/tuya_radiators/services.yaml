@@ -1,0 +1,18 @@
+refresh:
+  name: Refresh from cloud
+  description: >
+    Force an immediate cloud reconcile of one or all radiators, instead of
+    waiting up to 30 seconds for the next scheduled reconcile. Useful after
+    a brief cloud outage or when something was changed in the Tuya app and
+    you want to pull the new state immediately.
+  fields:
+    device_id:
+      name: Tuya device ID
+      description: >
+        22-character Tuya device_id of a specific radiator. If omitted,
+        every radiator in every account configured for this integration
+        is refreshed.
+      required: false
+      example: bfxxxxxxxxxxxxxxxxxxxx
+      selector:
+        text:
