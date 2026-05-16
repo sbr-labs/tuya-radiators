@@ -18,6 +18,16 @@
             "no_radiators_found": "No radiator-class devices were found on your Tuya account."
         }
     },
+    "issues": {
+        "write_failures": {
+            "title": "{name}: writes to {field} keep failing",
+            "description": "The last {count} cloud writes to {field} on {name} have all failed. The radiator may have lost WiFi, or the Tuya cloud may be unreachable. State changes you make in HA are reverting because the cloud isn't accepting them. Press the radiator's Refresh from Cloud button (or call the tuya_radiators.refresh service) once connectivity is back; this notice clears automatically on the next successful write."
+        },
+        "reconcile_failures": {
+            "title": "{name}: cloud reconcile keeps failing",
+            "description": "The last {count} attempts to fetch state from the Tuya cloud for {name} have all failed ({error}). Entities will go unavailable after 90 s of staleness. Check whether the host integration (tuya or xtend_tuya) is still authenticated, and that your internet is reachable. This notice clears automatically on the next successful reconcile."
+        }
+    },
     "entity": {
         "binary_sensor": {
             "online": {

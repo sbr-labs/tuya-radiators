@@ -36,5 +36,11 @@ COMMAND_RETRY_LIMIT: Final = 2
 RECONCILE_INTERVAL_S: Final = 30.0
 CLOUD_WRITE_CONFIRM_DELAY_S: Final = 2.0
 
+# Reliability tuning (v0.5)
+OPTIMISTIC_GUARD_S: Final = 30.0  # how long the reconcile loop honours an optimistic write
+WRITE_RETRY_DELAY_S: Final = 2.0  # backoff before retrying a failed cloud write once
+STALE_RECONCILE_S: Final = 90.0   # entities go unavailable if cloud reconcile hasn't run for this long
+FAILURE_THRESHOLD: Final = 3       # consecutive failures (writes OR reconciles) before raising a repair issue
+
 DEVICE_ID_LENGTH: Final = 22
 LOCAL_KEY_LENGTH: Final = 16

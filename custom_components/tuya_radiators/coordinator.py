@@ -1,23 +1,30 @@
-"""Per-radiator coordinator (hybrid: local read, cloud write).
+"""Per-radiator coordinator (borrowed-manager cloud writes).
 
-Owns one TuyaRadiatorClient (LAN telemetry tap) and a reference to the
-account-level TuyaCloudClient (for writes). State is push-driven:
+State machine:
 
-  * Local TCP frames arrive every ~1 s with the live DPS map. We merge
-    them into _state and notify listeners — this is the fast path that
-    keeps current_temperature live regardless of cloud health.
-  * Cloud writes are issued via the /commands API. The firmware silently
-    drops any local DPS writes, so cloud is the only viable path. After
-    a write we schedule a short cloud poll to confirm the change.
-  * The account's reconcile loop calls merge_cloud_state() every 30 s
-    to catch changes made in the Tuya app.
+  * Cloud reconcile (every 30 s via TuyaRadiatorAccount) pulls fresh
+    state from the borrowed Manager and calls merge_cloud_state().
+  * Writes go via async_set_dps:
+      - Idempotent — same value already set? No cloud round-trip.
+      - Optimistic-first — local state + notify happen synchronously,
+        cloud round-trip on a background task.
+      - One retry with backoff if the first cloud write fails.
+      - After FAILURE_THRESHOLD consecutive failures on the same DP,
+        raise a HA repair issue so the user actually finds out.
+  * Optimistic write-guard prevents reconcile from clobbering our value
+    while Tuya cloud is still propagating it.
+  * available returns False if reconcile hasn't succeeded recently —
+    so the UI shows truth, not stale state from 10 minutes ago.
 
-`available` reflects EITHER local-push reachability OR successful cloud
-poll. The user sees an unavailable entity only when both paths are dead.
+The local-LAN telemetry tap (TuyaRadiatorClient) is wired up but
+currently unused for FLS-118C radiators (cloud reports public WAN IPs
+that we can't reach from inside HAOS). Left in place because future
+hardware profiles may benefit.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -25,8 +32,16 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    FAILURE_THRESHOLD,
+    OPTIMISTIC_GUARD_S,
+    RECONCILE_INTERVAL_S,
+    STALE_RECONCILE_S,
+    WRITE_RETRY_DELAY_S,
+)
 from .models import ModelProfile
 from .sharing_cloud import SharingCloud, SharingCloudError
 from .tuya_protocol import TuyaRadiatorClient
@@ -35,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class RadiatorCoordinator:
-    """Single radiator: local-push read + cloud write."""
+    """Single radiator: cloud writes with optimistic-merge + retry + revert."""
 
     def __init__(
         self,
@@ -61,11 +76,11 @@ class RadiatorCoordinator:
         self._listeners: list[Callable[[], None]] = []
         self._state: dict[int, Any] = {}
         # dp -> (deadline_monotonic, expected_cloud_value) for DPs we
-        # just wrote and are waiting on Tuya cloud to propagate. While
-        # a guard is active, merge_cloud_state ignores stale cloud reads
-        # for that DP — otherwise the 30 s reconcile would clobber our
-        # optimistic value before Tuya catches up (1–10 s latency typical).
+        # just wrote and are waiting on Tuya cloud to propagate.
         self._optimistic_guard: dict[int, tuple[float, Any]] = {}
+        # dp -> consecutive-failure count for the persistent-notification path
+        self._consecutive_failures: dict[int, int] = {}
+        self._failure_issue_active: set[int] = set()
         self._local_connected = False
         self._cloud_alive = False
         self._last_local_push: float = 0.0
@@ -93,7 +108,20 @@ class RadiatorCoordinator:
 
     @property
     def available(self) -> bool:
-        return self._local_connected or self._cloud_alive
+        """True if local push is connected OR cloud reconcile has run recently.
+
+        Goes False if cloud hasn't responded for > STALE_RECONCILE_S
+        (default 90 s, i.e. 3 missed reconcile cycles). Showing stale
+        state as if it were live is worse than showing unavailable —
+        unavailable at least tells the user something is wrong.
+        """
+        if self._local_connected:
+            return True
+        if not self._cloud_alive:
+            return False
+        if self._last_cloud_poll == 0.0:
+            return False
+        return (time.monotonic() - self._last_cloud_poll) < STALE_RECONCILE_S
 
     @property
     def unique_id(self) -> str:
@@ -105,30 +133,34 @@ class RadiatorCoordinator:
             return None
         return time.monotonic() - self._last_local_push
 
+    @property
+    def last_cloud_poll_age_s(self) -> float | None:
+        if self._last_cloud_poll == 0.0:
+            return None
+        return time.monotonic() - self._last_cloud_poll
+
     def get_dps(self, dp: int) -> Any:
         return self._state.get(dp)
 
     # ---- write API for entities --------------------------------------
 
     async def async_set_dps(self, dp: int, value: Any) -> bool:
-        """Write a DPS via Tuya cloud — fire-and-forget.
+        """Set a DPS via Tuya cloud (idempotent, optimistic, retried once).
 
-        The optimistic merge + listener notify happens synchronously
-        before this returns, so HA's service call completes in <30 ms.
-        The actual cloud round-trip runs in a background task and only
-        surfaces if it fails (we revert + log warning).
-
-        This matches the HA light/switch convention and means user-perceived
-        latency is bounded by HA's own event-loop tick, not Tuya's cloud
-        round-trip (typically 70-150 ms, occasionally 1-10 s).
+        Returns immediately. UI flips before the cloud round-trip starts.
+        The cloud write happens in a background task with one retry on
+        failure. After FAILURE_THRESHOLD consecutive failures on this dp,
+        a repair issue is raised so the user notices.
         """
+        # Idempotent: same value already set with no in-flight guard? No-op.
+        if self._state.get(dp) == value and dp not in self._optimistic_guard:
+            _LOGGER.debug("%s set_dps dp=%s value=%s no-op", self.name, dp, value)
+            return True
+
         previous = self._state.get(dp)
         had_value = dp in self._state
         self._state[dp] = value
-        # Mark the DP as "recently written" so reconcile won't clobber
-        # our optimistic value with stale cloud state. Drop the guard
-        # when cloud catches up OR after 30 s (whichever is first).
-        self._optimistic_guard[dp] = (time.monotonic() + 30.0, value)
+        self._optimistic_guard[dp] = (time.monotonic() + OPTIMISTIC_GUARD_S, value)
         self._notify()
         self.hass.async_create_task(
             self._async_send_in_background(dp, value, previous, had_value),
@@ -140,27 +172,64 @@ class RadiatorCoordinator:
         self, dp: int, value: Any, previous: Any, had_value: bool
     ) -> None:
         """Run the cloud write off the service-call critical path."""
-        t0 = time.monotonic()
+        ok = await self._try_send(dp, value)
+        if not ok:
+            # One retry after backoff (catches transient cloud blips).
+            await asyncio.sleep(WRITE_RETRY_DELAY_S)
+            ok = await self._try_send(dp, value)
+        if ok:
+            self._consecutive_failures.pop(dp, None)
+            self._clear_failure_issue(dp)
+            return
+        # Both attempts failed: revert + count + maybe alert.
+        self._optimistic_guard.pop(dp, None)
+        if had_value:
+            self._state[dp] = previous
+        else:
+            self._state.pop(dp, None)
+        self._notify()
+        self._consecutive_failures[dp] = self._consecutive_failures.get(dp, 0) + 1
+        if self._consecutive_failures[dp] >= FAILURE_THRESHOLD:
+            self._raise_failure_issue(dp, value)
+
+    async def _try_send(self, dp: int, value: Any) -> bool:
         try:
-            ok = await self._cloud.async_send_dps(
+            return await self._cloud.async_send_dps(
                 self.device_id, self.profile, {dp: value}
             )
         except SharingCloudError as err:
             _LOGGER.warning(
-                "%s cloud write %s=%s failed: %s", self.name, dp, value, err
+                "%s cloud write dp=%s value=%s failed: %s",
+                self.name, dp, value, err,
             )
-            ok = False
-        _LOGGER.debug(
-            "%s bg set_dps dp=%s value=%s -> ok=%s in %.0f ms",
-            self.name, dp, value, ok, (time.monotonic() - t0) * 1000,
+            return False
+
+    def _raise_failure_issue(self, dp: int, value: Any) -> None:
+        if dp in self._failure_issue_active:
+            return
+        self._failure_issue_active.add(dp)
+        code = self.profile.code_for_dp(dp) or f"dp_{dp}"
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"write_fail_{self.device_id}_{dp}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="write_failures",
+            translation_placeholders={
+                "name": self.name,
+                "field": code,
+                "count": str(self._consecutive_failures.get(dp, 0)),
+            },
         )
-        if not ok:
-            self._optimistic_guard.pop(dp, None)
-            if had_value:
-                self._state[dp] = previous
-            else:
-                self._state.pop(dp, None)
-            self._notify()
+
+    def _clear_failure_issue(self, dp: int) -> None:
+        if dp not in self._failure_issue_active:
+            return
+        self._failure_issue_active.discard(dp)
+        ir.async_delete_issue(
+            self.hass, DOMAIN, f"write_fail_{self.device_id}_{dp}"
+        )
 
     # ---- merging from account reconcile loop -------------------------
 
@@ -170,8 +239,7 @@ class RadiatorCoordinator:
 
         Skips any DP currently under an optimistic write-guard, unless
         the cloud value matches what we wrote (in which case the guard
-        is satisfied and dropped). This prevents reconcile from clobbering
-        a fresh optimistic update before Tuya has propagated it.
+        is satisfied and dropped).
         """
         if not state:
             return
@@ -188,12 +256,10 @@ class RadiatorCoordinator:
             if guard is not None:
                 _deadline, expected = guard
                 if cloud_value == expected:
-                    # Cloud caught up to our write — guard satisfied.
                     self._optimistic_guard.pop(dp, None)
                     if self._state.get(dp) != cloud_value:
                         self._state[dp] = cloud_value
                         changed = True
-                # else: cloud is still stale, keep our optimistic value.
                 continue
             if self._state.get(dp) != cloud_value:
                 self._state[dp] = cloud_value
@@ -230,7 +296,6 @@ class RadiatorCoordinator:
 
     @callback
     def _handle_local_state(self, state: dict[int, Any]) -> None:
-        # local push wins on overlap because it's the freshest signal
         self._state.update(state)
         self._last_local_push = time.monotonic()
         self._notify()
@@ -250,3 +315,7 @@ class RadiatorCoordinator:
                 listener()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Listener for %s raised", self.name)
+
+
+# Re-export for tests + callers that imported RECONCILE_INTERVAL_S from here.
+__all__ = ["RadiatorCoordinator", "RECONCILE_INTERVAL_S"]

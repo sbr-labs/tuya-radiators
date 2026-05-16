@@ -30,6 +30,7 @@ from homeassistant.helpers import issue_registry as ir
 from .const import (
     CONF_DEVICES,
     DOMAIN,
+    FAILURE_THRESHOLD,
     RECONCILE_INTERVAL_S,
 )
 from .coordinator import RadiatorCoordinator
@@ -54,6 +55,9 @@ class TuyaRadiatorAccount:
         self._reconcile_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._auth_issue_active = False
+        # Per-device consecutive reconcile-failure count; cleared on success.
+        self._reconcile_fail_count: dict[str, int] = {}
+        self._reconcile_issue_active: set[str] = set()
 
     @property
     def devices(self) -> list[dict[str, Any]]:
@@ -142,13 +146,42 @@ class TuyaRadiatorAccount:
                 return
             except SharingCloudError as err:
                 _LOGGER.debug("reconcile %s failed: %s", device_id, err)
+                self._record_reconcile_failure(device_id, coordinator.name, str(err))
                 continue
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("reconcile %s crashed", device_id)
+                self._record_reconcile_failure(device_id, coordinator.name, "unknown error")
                 continue
             if state:
                 coordinator.merge_cloud_state(state)
                 self._clear_auth_issue()
+                self._record_reconcile_success(device_id)
+
+    def _record_reconcile_failure(self, device_id: str, name: str, msg: str) -> None:
+        count = self._reconcile_fail_count.get(device_id, 0) + 1
+        self._reconcile_fail_count[device_id] = count
+        if count < FAILURE_THRESHOLD or device_id in self._reconcile_issue_active:
+            return
+        self._reconcile_issue_active.add(device_id)
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"reconcile_fail_{device_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="reconcile_failures",
+            translation_placeholders={"name": name, "count": str(count), "error": msg},
+        )
+
+    def _record_reconcile_success(self, device_id: str) -> None:
+        if not self._reconcile_fail_count.get(device_id):
+            return
+        self._reconcile_fail_count.pop(device_id, None)
+        if device_id in self._reconcile_issue_active:
+            self._reconcile_issue_active.discard(device_id)
+            ir.async_delete_issue(
+                self.hass, DOMAIN, f"reconcile_fail_{device_id}"
+            )
 
     def _raise_auth_issue(self, err: SharingCloudError) -> None:
         if self._auth_issue_active:

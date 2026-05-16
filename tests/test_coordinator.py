@@ -51,10 +51,12 @@ def _make_coordinator(*, send_result=True, send_raises=None):
     coord._listeners = []
     coord._state = {}
     coord._optimistic_guard = {}
+    coord._consecutive_failures = {}
+    coord._failure_issue_active = set()
     coord._local_connected = False
     coord._cloud_alive = True
     coord._last_local_push = 0.0
-    coord._last_cloud_poll = 0.0
+    coord._last_cloud_poll = time.monotonic()
     coord.client = MagicMock()
     return coord
 
@@ -189,13 +191,16 @@ def test_get_dps_returns_state_value():
 
 
 def test_available_reflects_cloud_or_local():
+    """Cloud-alive plus recent reconcile, OR local connection => available."""
     coord = _make_coordinator()
     coord._local_connected = False
     coord._cloud_alive = False
     assert coord.available is False
     coord._cloud_alive = True
+    coord._last_cloud_poll = time.monotonic()  # fresh reconcile
     assert coord.available is True
     coord._cloud_alive = False
+    coord._last_cloud_poll = 0.0
     coord._local_connected = True
     assert coord.available is True
 
@@ -204,3 +209,89 @@ def test_cloud_property_exposes_borrowed_cloud():
     """Entities need access to .cloud to query device-online / trigger refresh."""
     coord = _make_coordinator()
     assert coord.cloud is coord._cloud
+
+
+# ---- v0.5 reliability features --------------------------------------
+
+
+def test_set_dps_is_idempotent_for_same_value():
+    """Same value already set + no in-flight guard? No cloud round-trip."""
+    coord = _make_coordinator()
+    coord._state[1] = True
+    # Sentinel: replace send-path with a counter
+    sent = []
+    async def _send(*a, **k): sent.append(a); return True
+    coord._cloud.async_send_dps = _send
+    asyncio.run(coord.async_set_dps(1, True))
+    assert sent == []  # no cloud call
+
+
+def test_set_dps_retries_once_on_failure():
+    """One transient failure should not cause a revert — we retry."""
+    results = [False, True]  # first fails, retry succeeds
+    coord = _make_coordinator()
+    async def _send(*a, **k): return results.pop(0)
+    coord._cloud.async_send_dps = _send
+    # zero the retry delay so test runs fast
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    try:
+        asyncio.run(_run_set_dps_and_drain(coord, 1, True))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    # Both write attempts were consumed and value stuck
+    assert results == []
+    assert coord._state[1] is True
+
+
+def test_set_dps_raises_repair_issue_after_threshold_failures():
+    """After FAILURE_THRESHOLD failures on the same dp, surface a repair issue."""
+    coord = _make_coordinator(send_result=False)
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    try:
+        for _ in range(c.FAILURE_THRESHOLD):
+            asyncio.run(_run_set_dps_and_drain(coord, 1, True))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    assert 1 in coord._failure_issue_active
+    assert coord._consecutive_failures[1] >= c.FAILURE_THRESHOLD
+
+
+def test_set_dps_failure_count_clears_after_success():
+    """A single successful write must clear the failure streak."""
+    coord = _make_coordinator()
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    # First, accumulate failures
+    fail_seq = [False, False]  # primary + retry both fail
+    async def _fail(*a, **k):
+        return fail_seq.pop(0) if fail_seq else True
+    coord._cloud.async_send_dps = _fail
+    try:
+        asyncio.run(_run_set_dps_and_drain(coord, 1, True))
+        assert coord._consecutive_failures[1] == 1
+        # Now a successful write should clear the counter
+        async def _ok(*a, **k): return True
+        coord._cloud.async_send_dps = _ok
+        asyncio.run(_run_set_dps_and_drain(coord, 1, False))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    assert 1 not in coord._consecutive_failures
+
+
+def test_available_goes_false_when_cloud_reconcile_stale():
+    """If cloud hasn't responded in STALE_RECONCILE_S, entity goes unavailable."""
+    from tuya_radiators.const import STALE_RECONCILE_S
+    coord = _make_coordinator()
+    coord._cloud_alive = True
+    coord._last_cloud_poll = time.monotonic() - (STALE_RECONCILE_S - 1)
+    assert coord.available is True
+    coord._last_cloud_poll = time.monotonic() - (STALE_RECONCILE_S + 1)
+    assert coord.available is False
+    # If local push is alive though, we're still available regardless
+    coord._local_connected = True
+    assert coord.available is True

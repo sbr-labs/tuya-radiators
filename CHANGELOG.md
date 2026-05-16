@@ -1,6 +1,28 @@
 # Changelog
 
-## 0.4.0-alpha (unreleased)
+## 0.5.0-alpha (unreleased)
+
+Reliability + failure-mode hardening.
+
+- **Idempotent writes**: `async_set_dps(dp, v)` skips the cloud round-trip
+  entirely if `v` is already the current state and no write is in flight.
+- **One retry on cloud failure** with `WRITE_RETRY_DELAY_S` (default 2 s)
+  backoff before revert. Catches transient blips that would previously
+  cause a UI bounce.
+- **Repair issue + persistent notification** after `FAILURE_THRESHOLD`
+  consecutive failures on the same DP (default 3). Surfaces in HA's
+  notification bell — not just in the log. Auto-clears on first success.
+- **Stale-reconcile detection**: entities go `unavailable` if cloud
+  hasn't responded in > `STALE_RECONCILE_S` (default 90 s). Truth in
+  advertising — better than showing stale state as if it's live.
+- **Reconcile-failure tracking**: account-level reconcile loop counts
+  consecutive failures per device and raises a separate repair issue
+  after 3 in a row. Auto-clears on first success.
+- All thresholds exposed as constants in `const.py` for future tuning.
+- 5 new tests covering idempotency, retry behaviour, failure-issue
+  lifecycle, stale-cloud unavailability. Test suite at 34 / 34 passing.
+
+## 0.4.0-alpha
 
 Reliability and operator-control improvements.
 
