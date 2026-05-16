@@ -1,15 +1,22 @@
 {
     "domain": "tuya_radiators",
     "name": "Tuya Radiators",
-    "after_dependencies": ["tuya", "xtend_tuya"],
-    "codeowners": ["@sbr-labs"],
+    "after_dependencies": [
+        "tuya",
+        "xtend_tuya"
+    ],
+    "codeowners": [
+        "@sbr-labs"
+    ],
     "config_flow": true,
     "dependencies": [],
     "documentation": "https://github.com/sbr-labs/tuya-radiators",
     "integration_type": "hub",
     "iot_class": "cloud_push",
     "issue_tracker": "https://github.com/sbr-labs/tuya-radiators/issues",
-    "loggers": ["custom_components.tuya_radiators"],
+    "loggers": [
+        "custom_components.tuya_radiators"
+    ],
     "requirements": [],
-    "version": "0.3.0-alpha"
+    "version": "0.3.1-alpha"
 }
