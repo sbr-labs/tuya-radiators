@@ -42,10 +42,6 @@ from .sharing_cloud import list_radiator_devices
 
 _LOGGER = logging.getLogger(__name__)
 
-# Tuya category codes that indicate a heating device when product_id
-# isn't in our known-models list. wk = heating; qn = electric heater.
-HEATING_CATEGORIES: set[str] = {"wk", "qn"}
-
 
 def _default_model_key() -> str:
     profiles = list_profiles()
@@ -63,19 +59,12 @@ class RadiatorConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        all_devices = list_radiator_devices(self.hass)
-        if not all_devices:
-            return self.async_abort(reason="no_host_integration")
-        candidates = []
-        for spec in all_devices:
-            product_id = spec.get("product_id") or ""
-            category = spec.get("category") or ""
-            profile = profile_for_product(product_id)
-            if profile is None and category not in HEATING_CATEGORIES:
-                continue
-            candidates.append(spec)
+        candidates = list_radiator_devices(self.hass)
         if not candidates:
-            return self.async_abort(reason="no_radiators_found")
+            # Could be "host integration not loaded" OR "no radiator-class
+            # devices on the host". The former is the more common cause
+            # when this is a fresh install, so we surface that.
+            return self.async_abort(reason="no_host_integration")
         self._candidates = candidates
         return await self.async_step_devices(user_input=None)
 
@@ -83,12 +72,7 @@ class RadiatorConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if not self._candidates:
-            self._candidates = [
-                spec
-                for spec in list_radiator_devices(self.hass)
-                if profile_for_product(spec.get("product_id") or "") is not None
-                or (spec.get("category") or "") in HEATING_CATEGORIES
-            ]
+            self._candidates = list_radiator_devices(self.hass)
         if not self._candidates:
             return self.async_abort(reason="no_radiators_found")
 

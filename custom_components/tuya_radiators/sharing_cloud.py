@@ -30,7 +30,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_HOST_DOMAIN, CONF_HOST_ENTRY_ID
-from .models import ModelProfile
+from .models import ModelProfile, profile_for_product
+
+# Tuya category codes for heating devices. wk = heating; qn = electric heater.
+# Used as a fallback when product_id isn't in our known-models list.
+_HEATING_CATEGORIES = frozenset({"wk", "qn"})
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +68,13 @@ def find_host(
 
 
 def list_radiator_devices(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """List heating-class devices visible to any installed Tuya host integration."""
+    """List heating-class devices visible to any loaded Tuya host integration.
+
+    Filtering rule: a device is included if (a) its Tuya `product_id` is
+    in our known-models map, OR (b) its Tuya `category` is a heating
+    category (`wk` / `qn`). Non-heating devices (lights, plugs, etc.)
+    are skipped — they belong to the host integration, not us.
+    """
     seen: dict[str, dict[str, Any]] = {}
     for domain, path in HOST_PRIORITY:
         for entry in hass.config_entries.async_entries(domain):
@@ -78,6 +88,11 @@ def list_radiator_devices(hass: HomeAssistant) -> list[dict[str, Any]]:
                     continue
                 product_id = getattr(device, "product_id", "") or ""
                 category = getattr(device, "category", "") or ""
+                if (
+                    profile_for_product(product_id) is None
+                    and category not in _HEATING_CATEGORIES
+                ):
+                    continue
                 local_key = getattr(device, "local_key", "") or ""
                 ip = getattr(device, "ip", "") or ""
                 seen[dev_id] = {
