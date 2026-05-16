@@ -18,7 +18,6 @@ poll. The user sees an unavailable entity only when both paths are dead.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -27,7 +26,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from .const import CLOUD_WRITE_CONFIRM_DELAY_S, DOMAIN
+from .const import DOMAIN
 from .models import ModelProfile
 from .sharing_cloud import SharingCloud, SharingCloudError
 from .tuya_protocol import TuyaRadiatorClient
