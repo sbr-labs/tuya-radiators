@@ -22,9 +22,12 @@ def _make_coordinator(*, send_result=True, send_raises=None):
     """Build a RadiatorCoordinator with a fully-stubbed cloud + LAN client."""
     hass = MagicMock()
     hass.loop.call_later = MagicMock()
-    hass.async_add_executor_job = MagicMock(
-        side_effect=lambda fn, *a: fn(*a)
-    )
+    async def _exec(fn, *a):
+        return fn(*a)
+    hass.async_add_executor_job = _exec
+    # MagicMock's default async_create_task drops the coroutine on the
+    # floor (just records the call). We need it to actually schedule.
+    hass.async_create_task = lambda coro, **_: asyncio.ensure_future(coro)
 
     cloud = MagicMock()
     if send_raises is not None:
@@ -59,48 +62,56 @@ def _make_coordinator(*, send_result=True, send_raises=None):
 # ---- optimistic merge ------------------------------------------------
 
 
+async def _run_set_dps_and_drain(coord, dp, value):
+    """async_set_dps is now fire-and-forget; we still need to wait for
+    the background task to finish so we can assert on its side effects."""
+    ok = await coord.async_set_dps(dp, value)
+    # Drain whatever background tasks fire-and-forget kicked off.
+    pending = [
+        t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+    ]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    return ok
+
+
 def test_set_dps_writes_state_before_awaiting_cloud():
-    """Optimistic-first: state must reflect the new value as soon as
-    async_set_dps yields, not when the cloud round-trip completes."""
+    """Fire-and-forget: state and notify happen BEFORE the cloud task,
+    so HA's service call completes in <30 ms regardless of cloud latency."""
     coord = _make_coordinator()
     notifications: list[dict] = []
     coord._listeners.append(lambda: notifications.append(dict(coord._state)))
     ok = asyncio.run(coord.async_set_dps(1, True))
+    # Returns immediately, before the background cloud write completes.
     assert ok is True
     assert coord._state[1] is True
-    # First notify happens BEFORE the cloud await returns — verified by
-    # the listener observing the new state.
     assert notifications and notifications[0][1] is True
 
 
 def test_set_dps_reverts_on_cloud_failure():
-    """If cloud explicitly rejects (returns False), revert local state."""
+    """If cloud explicitly rejects (returns False), background revert."""
     coord = _make_coordinator(send_result=False)
     coord._state[1] = False  # prior known state
     notifications: list[dict] = []
     coord._listeners.append(lambda: notifications.append(dict(coord._state)))
-    ok = asyncio.run(coord.async_set_dps(1, True))
-    assert ok is False
-    assert coord._state[1] is False  # reverted
-    # We should have notified twice: optimistic merge, then revert.
+    asyncio.run(_run_set_dps_and_drain(coord, 1, True))
+    assert coord._state[1] is False  # reverted asynchronously
     assert [n[1] for n in notifications] == [True, False]
 
 
 def test_set_dps_reverts_on_cloud_exception():
-    """Network error from cloud must also revert."""
+    """Network error from cloud must also revert (in background task)."""
     coord = _make_coordinator(send_raises=SharingCloudError("network"))
     coord._state[40] = True
-    ok = asyncio.run(coord.async_set_dps(40, False))
-    assert ok is False
-    assert coord._state[40] is True  # reverted to True
+    asyncio.run(_run_set_dps_and_drain(coord, 40, False))
+    assert coord._state[40] is True  # reverted
 
 
 def test_set_dps_revert_removes_dp_if_not_previously_set():
-    """If we didn't have the dp before, revert should DELETE it, not leave
-    it set to None."""
+    """If we didn't have the dp before, revert should DELETE it."""
     coord = _make_coordinator(send_result=False)
     assert 1 not in coord._state
-    asyncio.run(coord.async_set_dps(1, True))
+    asyncio.run(_run_set_dps_and_drain(coord, 1, True))
     assert 1 not in coord._state
 
 
@@ -187,3 +198,9 @@ def test_available_reflects_cloud_or_local():
     coord._cloud_alive = False
     coord._local_connected = True
     assert coord.available is True
+
+
+def test_cloud_property_exposes_borrowed_cloud():
+    """Entities need access to .cloud to query device-online / trigger refresh."""
+    coord = _make_coordinator()
+    assert coord.cloud is coord._cloud

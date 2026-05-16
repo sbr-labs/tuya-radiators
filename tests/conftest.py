@@ -39,11 +39,13 @@ if "homeassistant" not in sys.modules:
     def _callback(fn):
         return fn
 
-    _stub("homeassistant.core", HomeAssistant=MagicMock, callback=_callback)
+    _stub("homeassistant.core", HomeAssistant=MagicMock, callback=_callback,
+          ServiceCall=MagicMock)
     _stub("homeassistant.const", ATTR_TEMPERATURE="temperature",
           Platform=types.SimpleNamespace(
               CLIMATE="climate", SWITCH="switch", NUMBER="number",
               SELECT="select", BINARY_SENSOR="binary_sensor",
+              BUTTON="button",
           ),
           UnitOfTemperature=types.SimpleNamespace(CELSIUS="°C"))
     _stub("homeassistant.exceptions",
@@ -77,6 +79,9 @@ if "homeassistant" not in sys.modules:
     _stub("homeassistant.components.binary_sensor",
           BinarySensorEntity=type("BinarySensorEntity", (), {}),
           BinarySensorDeviceClass=types.SimpleNamespace(CONNECTIVITY="connectivity"))
+    _stub("homeassistant.components.button",
+          ButtonEntity=type("ButtonEntity", (), {}))
+    _stub("homeassistant.helpers.config_validation", string=str)
     _stub("homeassistant.components.climate",
           ClimateEntity=type("ClimateEntity", (), {}),
           ClimateEntityFeature=types.SimpleNamespace(

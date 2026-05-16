@@ -174,6 +174,18 @@ class SharingCloud:
     def all_devices(self) -> list:
         return list(self._manager().device_map.values())
 
+    def is_device_online(self, device_id: str) -> bool | None:
+        """Cloud's view of whether the radiator is currently reachable.
+
+        Different from `available` (which is "have we ever talked to
+        cloud") — this tracks the device's own WiFi connection. None
+        if we don't have the device in our map at all.
+        """
+        device = self.device(device_id)
+        if device is None:
+            return None
+        return bool(getattr(device, "online", False))
+
     async def async_get_status_by_dp(
         self, device_id: str, profile: ModelProfile
     ) -> dict[int, Any]:

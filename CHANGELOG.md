@@ -1,6 +1,34 @@
 # Changelog
 
-## 0.3.0-alpha (unreleased)
+## 0.4.0-alpha (unreleased)
+
+Reliability and operator-control improvements.
+
+- `binary_sensor.online` now reflects the cloud's per-device `online`
+  flag (radiator WiFi state) instead of just "have we ever talked to
+  cloud". A radiator that loses WiFi shows offline within ~30 s.
+- New `button.{room}_radiator_refresh` per radiator — on-demand cloud
+  reconcile for that one device. Useful after a brief cloud outage or
+  when you've changed something in the Tuya app and don't want to
+  wait for the next 30 s reconcile.
+- New service `tuya_radiators.refresh` (optional `device_id`) for
+  scripting/automation triggers of the same refresh.
+- Coordinator now exposes a public `cloud` property so the new
+  per-radiator surfaces can introspect the borrowed manager.
+
+## 0.3.1-alpha
+
+CI hardening.
+
+- Real GitHub Action SHAs for `hacs/action` (was a fake hash) and
+  `home-assistant/actions/hassfest`.
+- `manifest.json` keys sorted as hassfest expects (`domain`, `name`,
+  then alphabetical).
+- Pytest now runs in CI alongside ruff / bandit / pip-audit.
+- Filter for heating-class devices moved from `config_flow` into
+  `list_radiator_devices` so the filter logic isn't duplicated.
+
+## 0.3.0-alpha
 
 Borrowed-manager rewrite. The integration no longer authenticates to
 Tuya itself.

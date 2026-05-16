@@ -103,6 +103,20 @@ def test_get_status_missing_device_returns_empty():
     assert out == {}
 
 
+# ---- device-online flag (used by binary_sensor.online) --------------
+
+
+def test_is_device_online_reflects_cloud_flag():
+    """The binary_sensor.online must track the cloud's per-device flag,
+    not just whether we've ever talked to cloud."""
+    online_dev = _fake_device(online=True)
+    offline_dev = _fake_device(id="other", online=False)
+    cloud = _make_cloud(_fake_manager({"on": online_dev, "off": offline_dev}))
+    assert cloud.is_device_online("on") is True
+    assert cloud.is_device_online("off") is False
+    assert cloud.is_device_online("missing") is None
+
+
 # ---- write path / send_commands result interpretation ---------------
 
 

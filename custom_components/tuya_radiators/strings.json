@@ -46,6 +46,11 @@
                     "90_min": "90 min"
                 }
             }
+        },
+        "button": {
+            "refresh": {
+                "name": "Refresh from cloud"
+            }
         }
     }
 }

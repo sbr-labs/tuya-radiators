@@ -84,6 +84,10 @@ class RadiatorCoordinator:
     # ---- read API for entities ---------------------------------------
 
     @property
+    def cloud(self) -> SharingCloud:
+        return self._cloud
+
+    @property
     def state(self) -> dict[int, Any]:
         return dict(self._state)
 
@@ -107,25 +111,35 @@ class RadiatorCoordinator:
     # ---- write API for entities --------------------------------------
 
     async def async_set_dps(self, dp: int, value: Any) -> bool:
-        """Write a DPS via Tuya cloud. Always cloud — firmware drops local writes.
+        """Write a DPS via Tuya cloud — fire-and-forget.
 
-        Optimistic-first: flip local state and notify listeners *before*
-        the cloud round-trip so the UI responds in <100 ms, then revert
-        if the cloud write fails. This matches the HA switch/light/climate
-        convention and avoids the 1–10 s Tuya-API latency leaking into
-        the user-perceived response time.
+        The optimistic merge + listener notify happens synchronously
+        before this returns, so HA's service call completes in <30 ms.
+        The actual cloud round-trip runs in a background task and only
+        surfaces if it fails (we revert + log warning).
+
+        This matches the HA light/switch convention and means user-perceived
+        latency is bounded by HA's own event-loop tick, not Tuya's cloud
+        round-trip (typically 70-150 ms, occasionally 1-10 s).
         """
         previous = self._state.get(dp)
         had_value = dp in self._state
-        _LOGGER.debug(
-            "%s set_dps dp=%s value=%s previous=%s", self.name, dp, value, previous
-        )
         self._state[dp] = value
         # Mark the DP as "recently written" so reconcile won't clobber
         # our optimistic value with stale cloud state. Drop the guard
         # when cloud catches up OR after 30 s (whichever is first).
         self._optimistic_guard[dp] = (time.monotonic() + 30.0, value)
         self._notify()
+        self.hass.async_create_task(
+            self._async_send_in_background(dp, value, previous, had_value),
+            name=f"{DOMAIN}_send_{self.device_id[:8]}_{dp}",
+        )
+        return True
+
+    async def _async_send_in_background(
+        self, dp: int, value: Any, previous: Any, had_value: bool
+    ) -> None:
+        """Run the cloud write off the service-call critical path."""
         t0 = time.monotonic()
         try:
             ok = await self._cloud.async_send_dps(
@@ -137,7 +151,7 @@ class RadiatorCoordinator:
             )
             ok = False
         _LOGGER.debug(
-            "%s set_dps dp=%s value=%s -> ok=%s in %.0f ms",
+            "%s bg set_dps dp=%s value=%s -> ok=%s in %.0f ms",
             self.name, dp, value, ok, (time.monotonic() - t0) * 1000,
         )
         if not ok:
@@ -147,8 +161,6 @@ class RadiatorCoordinator:
             else:
                 self._state.pop(dp, None)
             self._notify()
-            return False
-        return True
 
     # ---- merging from account reconcile loop -------------------------
 
