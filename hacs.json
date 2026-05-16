@@ -1,0 +1,7 @@
+{
+    "name": "Tuya Radiators (Local)",
+    "render_readme": true,
+    "homeassistant": "2024.6.0",
+    "hacs": "2.0.0",
+    "country": ["GB"]
+}

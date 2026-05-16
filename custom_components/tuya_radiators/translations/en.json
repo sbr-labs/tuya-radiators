@@ -1,0 +1,51 @@
+{
+    "config": {
+        "step": {
+            "devices": {
+                "title": "Pick radiators to control",
+                "description": "Borrowing your existing Tuya cloud session - no sign-in needed. Tick the radiators you want to control from Home Assistant.",
+                "data": {
+                    "selected": "Radiators"
+                }
+            }
+        },
+        "error": {
+            "no_selection": "Pick at least one radiator to import."
+        },
+        "abort": {
+            "already_configured": "Tuya Radiators is already set up for this host integration.",
+            "no_host_integration": "Couldn't find a loaded Tuya integration to borrow from. Install either the official Tuya integration or Xtend Tuya first, sign in there, then try again.",
+            "no_radiators_found": "No radiator-class devices were found on your Tuya account."
+        }
+    },
+    "entity": {
+        "binary_sensor": {
+            "online": {
+                "name": "Online"
+            }
+        },
+        "switch": {
+            "power": {
+                "name": "Power"
+            },
+            "child_lock": {
+                "name": "Child lock"
+            }
+        },
+        "number": {
+            "calibration": {
+                "name": "Temperature calibration"
+            }
+        },
+        "select": {
+            "window_detection": {
+                "name": "Open window detection",
+                "state": {
+                    "off": "Off",
+                    "60_min": "60 min",
+                    "90_min": "90 min"
+                }
+            }
+        }
+    }
+}
