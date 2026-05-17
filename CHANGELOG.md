@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.5.0-alpha (unreleased)
+## 0.5.1-alpha (unreleased)
+
+Adds the radiator's second heating mode.
+
+- New `number.{room}_radiator_surface_max_temp` per radiator
+  (30-70 °C, 1 °C steps, writes DP 57 `cool_set_temp`). Caps the
+  element/surface temperature used by the radiator's "Radiator" mode
+  (cloud `mode = only_inside`) — the manual / non-thermostat heat
+  source that goes well above the 30 °C thermostat ceiling.
+- Renamed the climate preset `internal` → `radiator` to match the
+  front-panel label on the Ecostrad iQ Ceramic.
+- Profile now has `surface_max_temp` / `surface_min_temp_c` /
+  `surface_max_temp_c` fields, all optional so non-iQ-Ceramic profiles
+  can omit them.
+- 3 new tests cover the new field's scaling, dp/code mapping, and
+  preset rename. Suite at 36/36.
+
+## 0.5.0-alpha
 
 Reliability + failure-mode hardening.
 

@@ -47,6 +47,11 @@
                 "name": "Temperature calibration"
             }
         },
+        "sensor": {
+            "surface_max_temp": {
+                "name": "Surface max temp"
+            }
+        },
         "select": {
             "window_detection": {
                 "name": "Open window detection",

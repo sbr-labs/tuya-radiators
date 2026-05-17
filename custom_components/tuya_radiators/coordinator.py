@@ -172,16 +172,25 @@ class RadiatorCoordinator:
         self, dp: int, value: Any, previous: Any, had_value: bool
     ) -> None:
         """Run the cloud write off the service-call critical path."""
-        ok = await self._try_send(dp, value)
+        first_raised = False
+        ok, raised = await self._try_send(dp, value)
+        if raised:
+            first_raised = True
         if not ok:
             # One retry after backoff (catches transient cloud blips).
             await asyncio.sleep(WRITE_RETRY_DELAY_S)
-            ok = await self._try_send(dp, value)
+            ok, retry_raised = await self._try_send(dp, value)
+            # If the FIRST attempt raised an explicit exception (real
+            # Tuya rejection like error 2008), don't trust a None-returning
+            # retry — that's the SDK's "no exception, no info" no-op
+            # result, not a real success acknowledgement.
+            if ok and first_raised and not retry_raised:
+                ok = False
         if ok:
             self._consecutive_failures.pop(dp, None)
             self._clear_failure_issue(dp)
             return
-        # Both attempts failed: revert + count + maybe alert.
+        # Failed: revert + count + maybe alert.
         self._optimistic_guard.pop(dp, None)
         if had_value:
             self._state[dp] = previous
@@ -192,17 +201,19 @@ class RadiatorCoordinator:
         if self._consecutive_failures[dp] >= FAILURE_THRESHOLD:
             self._raise_failure_issue(dp, value)
 
-    async def _try_send(self, dp: int, value: Any) -> bool:
+    async def _try_send(self, dp: int, value: Any) -> tuple[bool, bool]:
+        """Return (ok, raised_exception)."""
         try:
-            return await self._cloud.async_send_dps(
+            ok = await self._cloud.async_send_dps(
                 self.device_id, self.profile, {dp: value}
             )
+            return ok, False
         except SharingCloudError as err:
             _LOGGER.warning(
                 "%s cloud write dp=%s value=%s failed: %s",
                 self.name, dp, value, err,
             )
-            return False
+            return False, True
 
     def _raise_failure_issue(self, dp: int, value: Any) -> None:
         if dp in self._failure_issue_active:

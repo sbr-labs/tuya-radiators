@@ -24,12 +24,15 @@ ECOSTRAD_IQCERAMIC = ModelProfile(
     child_lock=DpsField(dp=40, code="child_lock"),
     preset_dps=DpsField(dp=2, code="mode"),
     preset=PresetMap(
+        # Front-panel names → HA preset names. The Ecostrad fifth preset
+        # is "Radiator" mode (direct element heating up to 70 °C, no
+        # room thermostat) — the cloud calls this `only_inside`.
         raw_to_preset={
             "auto": "program",
             "eco": "eco",
             "hot": "comfort",
             "cold": "away",
-            "only_inside": "internal",
+            "only_inside": "radiator",
         }
     ),
     window_detection_dps=DpsField(dp=108, code="Open_Window"),
@@ -45,6 +48,13 @@ ECOSTRAD_IQCERAMIC = ModelProfile(
         "60": "60_min",
         "90": "90_min",
     },
+    # DP 57 = `cool_set_temp` in Tuya's confusingly-named schema, but it
+    # actually caps the radiator element/surface temperature when the
+    # radiator is in "Radiator" mode (front-panel) / `only_inside` mode
+    # (cloud). Range 30-70 °C in 1 °C steps. Default 60 °C from factory.
+    surface_max_temp=DpsField(dp=57, code="cool_set_temp", scale=10.0),
+    surface_min_temp_c=30.0,
+    surface_max_temp_c=70.0,
 )
 
 # Tuya product_ids that map to this profile.

@@ -1,4 +1,12 @@
-"""Temperature calibration number entity."""
+"""Number entities for the radiator.
+
+* CalibrationNumber — offsets the radiator's internal temp sensor by ±5 °C.
+  Diagnostic / config entity.
+* SurfaceMaxTempNumber — caps the radiator element/surface temperature
+  used by the "Radiator" preset (front-panel) / `only_inside` mode (cloud).
+  Range 30-70 °C. User-facing entity. Only created if the profile
+  declares `surface_max_temp`.
+"""
 
 from __future__ import annotations
 
@@ -51,3 +59,9 @@ class CalibrationNumber(RadiatorEntity, NumberEntity):
         await self._coordinator.async_set_dps(
             profile.calibration.dp, profile.calibration.to_raw(clamped)
         )
+
+
+# Note: SurfaceMaxTempNumber was removed in 0.5.1-alpha2 because the Ecostrad
+# firmware rejects cloud writes to `cool_set_temp` (Tuya error code 2008).
+# Surface-max-temp is set on the radiator's physical panel only; we surface
+# it as a read-only sensor in sensor.py.

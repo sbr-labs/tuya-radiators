@@ -45,7 +45,7 @@ if "homeassistant" not in sys.modules:
           Platform=types.SimpleNamespace(
               CLIMATE="climate", SWITCH="switch", NUMBER="number",
               SELECT="select", BINARY_SENSOR="binary_sensor",
-              BUTTON="button",
+              BUTTON="button", SENSOR="sensor",
           ),
           UnitOfTemperature=types.SimpleNamespace(CELSIUS="°C"))
     _stub("homeassistant.exceptions",
@@ -79,6 +79,9 @@ if "homeassistant" not in sys.modules:
     _stub("homeassistant.components.binary_sensor",
           BinarySensorEntity=type("BinarySensorEntity", (), {}),
           BinarySensorDeviceClass=types.SimpleNamespace(CONNECTIVITY="connectivity"))
+    _stub("homeassistant.components.sensor",
+          SensorEntity=type("SensorEntity", (), {}),
+          SensorDeviceClass=types.SimpleNamespace(TEMPERATURE="temperature"))
     _stub("homeassistant.components.button",
           ButtonEntity=type("ButtonEntity", (), {}))
     _stub("homeassistant.helpers.config_validation", string=str)

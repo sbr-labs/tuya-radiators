@@ -283,6 +283,34 @@ def test_set_dps_failure_count_clears_after_success():
     assert 1 not in coord._consecutive_failures
 
 
+def test_first_attempt_raises_retry_returns_none_must_revert():
+    """Regression — observed against the FLS-118C surface_max_temp DP:
+    first attempt raised explicit Tuya error 2008, retry returned None
+    (which the SDK sometimes does for an unsuccessful call), and we
+    treated None-after-exception as success. State stayed at the wrong
+    optimistic value. Must revert when the first attempt raised."""
+    from tuya_radiators.sharing_cloud import SharingCloudError
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    coord = _make_coordinator()
+    coord._state[1] = False
+    seq = ["raise", "none"]
+
+    async def _send(*a, **k):
+        action = seq.pop(0)
+        if action == "raise":
+            raise SharingCloudError("Tuya 2008 bad request")
+        return None  # SDK no-info success-like return
+    coord._cloud.async_send_dps = _send
+    try:
+        asyncio.run(_run_set_dps_and_drain(coord, 1, True))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    # The retry's None should NOT be trusted because first attempt raised
+    assert coord._state[1] is False, "state must revert when first attempt raised"
+
+
 def test_available_goes_false_when_cloud_reconcile_stale():
     """If cloud hasn't responded in STALE_RECONCILE_S, entity goes unavailable."""
     from tuya_radiators.const import STALE_RECONCILE_S

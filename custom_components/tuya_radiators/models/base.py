@@ -75,6 +75,11 @@ class ModelProfile:
     preset_dps: DpsField | None = None
     window_detection_dps: DpsField | None = None
     window_detection_options: dict[str, str] = field(default_factory=dict)
+    # Surface / element max-temp cap used by the radiator-direct (vs
+    # thermostat) heating mode. None for models that have no such cap.
+    surface_max_temp: DpsField | None = None
+    surface_min_temp_c: float = 30.0
+    surface_max_temp_c: float = 70.0
 
     def all_fields(self) -> list[DpsField]:
         """Every DpsField referenced by this profile."""
@@ -89,6 +94,8 @@ class ModelProfile:
             out.append(self.preset_dps)
         if self.window_detection_dps is not None:
             out.append(self.window_detection_dps)
+        if self.surface_max_temp is not None:
+            out.append(self.surface_max_temp)
         return out
 
     def dp_for_code(self, code: str) -> int | None:
