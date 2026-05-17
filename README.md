@@ -4,8 +4,9 @@ A focused Home Assistant integration for WiFi panel-heater radiators on
 the Tuya / Smart Life platform (Ecostrad iQ Ceramic and same-platform
 OEMs). It does the one thing the official `tuya` and `xtend_tuya`
 integrations expose poorly: a clean climate entity per radiator, plus
-power, child-lock, calibration and open-window-detection controls, with
-fast UI response and explicit support for the Ecostrad firmware quirks.
+power, child-lock, calibration, open-window-detection, surface-temp
+sensor, and an on-demand refresh button — with fast UI response (~25 ms
+optimistic flip) and explicit support for the Ecostrad firmware quirks.
 
 ## Design
 
@@ -33,12 +34,24 @@ first.
 
 | Entity | Purpose |
 | --- | --- |
-| `climate` | Target temperature (7–30 °C, 0.5 °C steps), current temperature, heat / off mode, comfort / eco / away / program / internal presets |
+| `climate` | Target temperature (7–30 °C, 0.5 °C steps), current temperature, heat / off mode, presets: `comfort` / `eco` / `away` / `program` / `radiator` |
 | `switch.power` | Direct power toggle (`mdi:radiator` / `mdi:radiator-off`) |
 | `switch.child_lock` | Toggle the front-panel child lock |
 | `number.calibration` | Adjust the radiator's internal temperature reading by ±5 °C |
 | `select.window_detection` | Off / 60 min / 90 min open-window response |
-| `binary_sensor.online` | Reachable on cloud reconcile |
+| `sensor.surface_max_temp` | Read-only display of the surface-temperature cap used in `radiator` preset (30–70 °C). Firmware doesn't accept cloud writes to this value — set on the device's physical panel |
+| `binary_sensor.online` | True when the device's WiFi is reachable from Tuya cloud |
+| `button.refresh_from_cloud` | On-demand reconcile for one radiator (also available as the `tuya_radiators.refresh` service) |
+
+### Presets
+
+| Preset | Cloud `mode` | Heat source |
+| --- | --- | --- |
+| `program` | `auto` | Thermostat target (7–30 °C) following weekly schedule |
+| `comfort` | `hot` | Thermostat target |
+| `eco` | `eco` | Thermostat target |
+| `away` | `cold` | Thermostat target |
+| `radiator` | `only_inside` | Direct element/surface heating capped by `sensor.surface_max_temp` — thermostat target is ignored in this mode |
 
 ## Response time
 
