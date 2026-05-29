@@ -51,6 +51,7 @@ def _make_cloud(manager, hass=None, entry=None):
     cloud._entry = entry or MagicMock()
     cloud._host_domain = "tuya"
     cloud._host_entry_id = "test"
+    cloud._call_lock = asyncio.Lock()
     cloud._manager = lambda: manager
     return cloud
 
@@ -211,6 +212,62 @@ def test_send_dps_wraps_generic_errors_as_cloud_error():
     cloud._hass.async_add_executor_job = _exec
     with pytest.raises(SharingCloudError):
         asyncio.run(cloud.async_send_dps("d", ECOSTRAD_IQCERAMIC, {1: True}))
+
+
+# ---- write serialization (the sign-invalid burst race fix) ----------
+
+
+def test_concurrent_sends_are_serialized():
+    """Overlapping writes through the borrowed manager must NOT run at the
+    same time — concurrent request-signing is what produced `sign invalid`
+    on all-but-one of a burst (field-confirmed 2026-05-27)."""
+    manager = _fake_manager({"d": _fake_device()})
+    overlap = {"current": 0, "max": 0}
+
+    async def main():
+        cloud = _make_cloud(manager)
+
+        async def _exec(fn, *a):
+            # Simulate the blocking SDK call: mark that we're "inside" the
+            # signed call and yield, so any overlap would be observed.
+            overlap["current"] += 1
+            overlap["max"] = max(overlap["max"], overlap["current"])
+            await asyncio.sleep(0)
+            overlap["current"] -= 1
+            return None
+
+        cloud._hass.async_add_executor_job = _exec
+        await asyncio.gather(*(
+            cloud.async_send_dps("d", ECOSTRAD_IQCERAMIC, {16: 200 + i})
+            for i in range(5)
+        ))
+
+    asyncio.run(main())
+    assert overlap["max"] == 1, "writes overlapped — lock not serializing"
+
+
+# ---- forced token refresh (the stale-token self-heal) ---------------
+
+
+def test_force_token_refresh_resets_expiry():
+    """On `sign invalid` we reset the borrowed token's cached expiry so the
+    SDK refreshes on the next request instead of needing a manual reload."""
+    manager = _fake_manager({"d": _fake_device()})
+    manager.customer_api = types.SimpleNamespace(
+        token_info=types.SimpleNamespace(expire_time=9_999_999_999)
+    )
+    cloud = _make_cloud(manager)
+    did = asyncio.run(cloud.async_force_token_refresh())
+    assert did is True
+    assert manager.customer_api.token_info.expire_time == 0
+
+
+def test_force_token_refresh_noops_when_no_token():
+    """If the borrowed manager isn't shaped as expected, degrade quietly."""
+    # Plain object (not MagicMock) so missing attrs really resolve to None.
+    manager = types.SimpleNamespace(device_map={"d": _fake_device()})
+    cloud = _make_cloud(manager)
+    assert asyncio.run(cloud.async_force_token_refresh()) is False
 
 
 # ---- host discovery / device filtering ------------------------------

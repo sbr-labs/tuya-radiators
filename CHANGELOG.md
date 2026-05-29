@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.2-alpha (unreleased)
+
+Fixes `sign invalid` cloud-write failures.
+
+- **Serialize cloud writes.** All of an account's radiators share one
+  borrowed `tuya_sharing.Manager`, whose per-request signing and lazy
+  token refresh are not concurrency-safe. Firing several writes at once
+  (multiple radiators, or a single command that both powers on and sets
+  temp) made all-but-one come back `{"code":"-9999999","msg":"sign
+  invalid"}`. A shared `asyncio.Lock` now serializes every signed call
+  through the borrowed manager.
+- **Self-heal stale tokens.** On an auth/`sign invalid` rejection, the
+  write path now nudges a token refresh (resets the borrowed token's
+  cached expiry so the SDK re-fetches on the next request) before its
+  retry — instead of failing until the host integration is manually
+  reloaded. Version-tolerant: no-ops if the borrowed manager's internals
+  differ.
+- 4 new tests: write serialization, forced token refresh (+ no-op
+  fallback), and the auth-vs-generic retry paths. Suite at 42/42.
+
 ## 0.5.1-alpha (unreleased)
 
 Adds the radiator's second heating mode.

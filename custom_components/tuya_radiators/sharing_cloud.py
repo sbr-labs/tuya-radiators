@@ -23,6 +23,7 @@ integration thinks in.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -125,6 +126,13 @@ class SharingCloud:
         self._entry = entry
         self._host_domain: str = entry.data.get(CONF_HOST_DOMAIN, "")
         self._host_entry_id: str = entry.data.get(CONF_HOST_ENTRY_ID, "")
+        # Serializes every signed API call we make through the borrowed
+        # manager. tuya_sharing signs each request with a per-request
+        # timestamp/nonce and refreshes its token lazily — none of that is
+        # concurrency-safe, so overlapping calls make all-but-one come back
+        # `sign invalid`. One SharingCloud is shared by all of an account's
+        # radiator coordinators, so this instance lock serializes them all.
+        self._call_lock = asyncio.Lock()
 
     def _manager(self) -> Any:
         """Resolve the current borrowed Manager, or raise SharingCloudAuthError."""
@@ -163,9 +171,44 @@ class SharingCloud:
         """Refresh the host manager's device cache (best-effort)."""
         manager = self._manager()
         try:
-            await self._hass.async_add_executor_job(manager.update_device_cache)
+            async with self._call_lock:
+                await self._hass.async_add_executor_job(manager.update_device_cache)
         except Exception as err:  # noqa: BLE001
             raise self._wrap(err) from err
+
+    async def async_force_token_refresh(self) -> bool:
+        """Nudge the borrowed manager to refresh its access token.
+
+        A `sign invalid` rejection means the token the host integration
+        handed us is stale — often invalidated server-side (e.g. by another
+        login on the account) without the SDK noticing. tuya_sharing only
+        auto-refreshes when it believes the token is near expiry, so we
+        reset the cached expiry to force a refresh on the next request.
+
+        Best-effort and version-tolerant: silently no-ops (returns False)
+        if the borrowed manager's internals aren't shaped as expected, so a
+        future SDK change degrades to "manual reload still works" rather
+        than crashing the write path.
+        """
+        try:
+            manager = self._manager()
+        except SharingCloudError:
+            return False
+        api = getattr(manager, "customer_api", None) or getattr(manager, "api", None)
+        token_info = getattr(api, "token_info", None)
+        if token_info is None or not hasattr(token_info, "expire_time"):
+            _LOGGER.debug(
+                "token-refresh nudge: borrowed %s manager has no resettable token",
+                self._host_domain,
+            )
+            return False
+        try:
+            token_info.expire_time = 0
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("token-refresh nudge failed: %s", err)
+            return False
+        _LOGGER.debug("forced token-expiry reset on borrowed %s manager", self._host_domain)
+        return True
 
     def device(self, device_id: str) -> Any | None:
         manager = self._manager()
@@ -229,9 +272,12 @@ class SharingCloud:
             return False
         manager = self._manager()
         try:
-            result = await self._hass.async_add_executor_job(
-                manager.send_commands, device_id, commands
-            )
+            # Serialize: never sign two requests through the borrowed
+            # manager at once (see _call_lock docstring).
+            async with self._call_lock:
+                result = await self._hass.async_add_executor_job(
+                    manager.send_commands, device_id, commands
+                )
         except Exception as err:  # noqa: BLE001
             raise self._wrap(err) from err
         _LOGGER.debug(

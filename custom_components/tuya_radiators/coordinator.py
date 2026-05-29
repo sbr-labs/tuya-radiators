@@ -43,7 +43,7 @@ from .const import (
     WRITE_RETRY_DELAY_S,
 )
 from .models import ModelProfile
-from .sharing_cloud import SharingCloud, SharingCloudError
+from .sharing_cloud import SharingCloud, SharingCloudAuthError, SharingCloudError
 from .tuya_protocol import TuyaRadiatorClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -173,13 +173,18 @@ class RadiatorCoordinator:
     ) -> None:
         """Run the cloud write off the service-call critical path."""
         first_raised = False
-        ok, raised = await self._try_send(dp, value)
+        ok, raised, auth = await self._try_send(dp, value)
         if raised:
             first_raised = True
         if not ok:
+            # A `sign invalid`/token rejection means the borrowed token is
+            # stale — nudge a refresh so the retry signs with a fresh one
+            # instead of failing again and waiting for a manual reload.
+            if auth:
+                await self._cloud.async_force_token_refresh()
             # One retry after backoff (catches transient cloud blips).
             await asyncio.sleep(WRITE_RETRY_DELAY_S)
-            ok, retry_raised = await self._try_send(dp, value)
+            ok, retry_raised, _ = await self._try_send(dp, value)
             # If the FIRST attempt raised an explicit exception (real
             # Tuya rejection like error 2008), don't trust a None-returning
             # retry — that's the SDK's "no exception, no info" no-op
@@ -201,19 +206,25 @@ class RadiatorCoordinator:
         if self._consecutive_failures[dp] >= FAILURE_THRESHOLD:
             self._raise_failure_issue(dp, value)
 
-    async def _try_send(self, dp: int, value: Any) -> tuple[bool, bool]:
-        """Return (ok, raised_exception)."""
+    async def _try_send(self, dp: int, value: Any) -> tuple[bool, bool, bool]:
+        """Return (ok, raised_exception, was_auth_error)."""
         try:
             ok = await self._cloud.async_send_dps(
                 self.device_id, self.profile, {dp: value}
             )
-            return ok, False
+            return ok, False, False
+        except SharingCloudAuthError as err:
+            _LOGGER.warning(
+                "%s cloud write dp=%s value=%s failed (auth/sign): %s",
+                self.name, dp, value, err,
+            )
+            return False, True, True
         except SharingCloudError as err:
             _LOGGER.warning(
                 "%s cloud write dp=%s value=%s failed: %s",
                 self.name, dp, value, err,
             )
-            return False, True
+            return False, True, False
 
     def _raise_failure_issue(self, dp: int, value: Any) -> None:
         if dp in self._failure_issue_active:

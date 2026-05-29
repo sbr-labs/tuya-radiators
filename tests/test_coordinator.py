@@ -15,7 +15,7 @@ import pytest
 
 from tuya_radiators.coordinator import RadiatorCoordinator
 from tuya_radiators.models import ECOSTRAD_IQCERAMIC
-from tuya_radiators.sharing_cloud import SharingCloudError
+from tuya_radiators.sharing_cloud import SharingCloudAuthError, SharingCloudError
 
 
 def _make_coordinator(*, send_result=True, send_raises=None):
@@ -38,6 +38,14 @@ def _make_coordinator(*, send_result=True, send_raises=None):
         async def _send(*_a, **_k):
             return send_result
         cloud.async_send_dps = _send
+
+    # Awaitable stub for the auth-recovery nudge (see _async_send_in_background).
+    refresh_calls = {"n": 0}
+    async def _refresh(*_a, **_k):
+        refresh_calls["n"] += 1
+        return True
+    cloud.async_force_token_refresh = _refresh
+    cloud._refresh_calls = refresh_calls
 
     # Avoid spinning up tuya_protocol's real socket
     coord = RadiatorCoordinator.__new__(RadiatorCoordinator)
@@ -309,6 +317,51 @@ def test_first_attempt_raises_retry_returns_none_must_revert():
         c.WRITE_RETRY_DELAY_S = orig
     # The retry's None should NOT be trusted because first attempt raised
     assert coord._state[1] is False, "state must revert when first attempt raised"
+
+
+def test_auth_error_nudges_token_refresh_before_retry():
+    """A `sign invalid`/auth rejection on the first write must trigger a
+    token-refresh nudge before the retry, so a stale borrowed token
+    self-heals instead of needing a manual integration reload."""
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    coord = _make_coordinator()
+    seq = ["auth", "ok"]
+
+    async def _send(*a, **k):
+        action = seq.pop(0)
+        if action == "auth":
+            raise SharingCloudAuthError("sign invalid")
+        return True
+    coord._cloud.async_send_dps = _send
+    try:
+        asyncio.run(_run_set_dps_and_drain(coord, 16, 220))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    assert coord._cloud._refresh_calls["n"] == 1, "token refresh not nudged on auth error"
+
+
+def test_generic_error_does_not_nudge_token_refresh():
+    """A non-auth cloud error (e.g. transient network) should just retry,
+    NOT churn a token refresh."""
+    import tuya_radiators.coordinator as c
+    orig = c.WRITE_RETRY_DELAY_S
+    c.WRITE_RETRY_DELAY_S = 0
+    coord = _make_coordinator()
+    seq = ["err", "ok"]
+
+    async def _send(*a, **k):
+        action = seq.pop(0)
+        if action == "err":
+            raise SharingCloudError("network down")
+        return True
+    coord._cloud.async_send_dps = _send
+    try:
+        asyncio.run(_run_set_dps_and_drain(coord, 16, 220))
+    finally:
+        c.WRITE_RETRY_DELAY_S = orig
+    assert coord._cloud._refresh_calls["n"] == 0, "should not refresh token on non-auth error"
 
 
 def test_available_goes_false_when_cloud_reconcile_stale():
