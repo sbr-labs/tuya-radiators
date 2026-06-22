@@ -17,6 +17,8 @@
     "loggers": [
         "custom_components.tuya_radiators"
     ],
-    "requirements": [],
-    "version": "0.5.2-alpha"
+    "requirements": [
+        "tinytuya==1.18.1"
+    ],
+    "version": "0.5.3-alpha"
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3-alpha
+
+Declare the `tinytuya` runtime dependency.
+
+- `tuya_protocol.py` imports `tinytuya` for the local TCP/6668 telemetry
+  thread, but the manifest declared `"requirements": []`. It only worked
+  while `tinytuya` happened to already be present in Home Assistant's
+  Python environment (pulled in by another integration). A Core/venv
+  rebuild — HA 2026.6.x on Python 3.14 — wiped it, and the whole
+  integration failed to load with `No module named 'tinytuya'`. The
+  manifest now declares `tinytuya==1.18.1` so HA installs it on setup.
+
+
 ## 0.5.2-alpha (unreleased)
 
 Fixes `sign invalid` cloud-write failures.
