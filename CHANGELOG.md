@@ -1,8 +1,11 @@
 # Changelog
 
-## 0.5.3-alpha
+## 1.0.0
 
-Declare the `tinytuya` runtime dependency.
+First stable release. Running in production since 2026-05 across
+multiple Home Assistant Core upgrades (incl. 2026.6.x on Python 3.14).
+
+Also declares the `tinytuya` runtime dependency.
 
 - `tuya_protocol.py` imports `tinytuya` for the local TCP/6668 telemetry
   thread, but the manifest declared `"requirements": []`. It only worked
